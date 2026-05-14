@@ -1,0 +1,145 @@
+const express = require("express");
+const sqlite3 = require("sqlite3").verbose();
+
+const app = express();
+app.use(express.json());
+
+// ================= DATABASE =================
+const db = new sqlite3.Database("teli.db");
+
+db.serialize(() => {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT,
+      balance REAL DEFAULT 0,
+      plan REAL DEFAULT 0,
+      last_claim INTEGER DEFAULT 0,
+      ref TEXT
+    )
+  `);
+});
+
+// ================= CREATE USER =================
+app.post("/login", (req, res) => {
+  const { id, username, ref } = req.body;
+
+  db.get("SELECT * FROM users WHERE id=?", [id], (err, user) => {
+    if (!user) {
+      db.run(
+        "INSERT INTO users (id, username, ref) VALUES (?,?,?)",
+        [id, username, ref || ""]
+      );
+    }
+  });
+
+  res.json({ ok: true });
+});
+
+// ================= GET USER =================
+app.get("/user/:id", (req, res) => {
+  db.get("SELECT * FROM users WHERE id=?", [req.params.id], (err, row) => {
+    res.json(row || {});
+  });
+});
+
+// ================= CLAIM =================
+app.post("/claim", (req, res) => {
+  const id = req.body.id;
+
+  db.get("SELECT * FROM users WHERE id=?", [id], (err, user) => {
+    if (!user) return res.json({ error: "user not found" });
+
+    let now = Date.now();
+
+    if (now - user.last_claim < 86400000)
+      return res.json({ error: "انتظر 24 ساعة" });
+
+    let reward = user.plan > 0 ? user.plan * 0.10 : 10;
+
+    db.run(
+      "UPDATE users SET balance = balance + ?, last_claim=? WHERE id=?",
+      [reward, now, id]
+    );
+
+    res.json({ ok: true, reward });
+  });
+});
+
+// ================= WITHDRAW =================
+app.post("/withdraw", (req, res) => {
+  const { id, amount } = req.body;
+
+  db.get("SELECT * FROM users WHERE id=?", [id], (err, user) => {
+    if (!user || user.balance < amount)
+      return res.json({ error: "رصيد غير كافي" });
+
+    db.run(
+      "UPDATE users SET balance = balance - ? WHERE id=?",
+      [amount, id]
+    );
+
+    res.json({ ok: true, message: "طلب السحب قيد المراجعة" });
+  });
+});
+
+// ================= WEB APP =================
+app.get("/", (req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>تلي كاش</title>
+<style>
+body{background:#0f0f0f;color:white;text-align:center;font-family:Arial}
+.box{margin-top:30px}
+button{padding:10px 20px;border:none;border-radius:10px;background:#1f6fff;color:white}
+</style>
+</head>
+<body>
+
+<h1>💰 تلي كاش الحقيقي</h1>
+
+<p>الرصيد: <span id="bal">0</span></p>
+
+<button onclick="claim()">استلام الأرباح</button>
+
+<br><br>
+
+<input id="amt" placeholder="سحب">
+<button onclick="withdraw()">سحب</button>
+
+<script>
+let id = "123"; // هنا تربطه بتيليجرام لاحقاً
+
+function load(){
+fetch("/user/"+id)
+.then(r=>r.json())
+.then(d=>{
+document.getElementById("bal").innerText = d.balance || 0;
+});
+}
+
+function claim(){
+fetch("/claim",{method:"POST",headers:{"Content-Type":"application/json"},
+body:JSON.stringify({id})})
+.then(r=>r.json()).then(alert).then(load);
+}
+
+function withdraw(){
+fetch("/withdraw",{method:"POST",headers:{"Content-Type":"application/json"},
+body:JSON.stringify({id, amount:document.getElementById("amt").value})})
+.then(r=>r.json()).then(alert).then(load);
+}
+
+load();
+</script>
+
+</body>
+</html>
+  `);
+});
+
+// ================= START =================
+app.listen(3000, () => console.log("TeliCash Running"));
